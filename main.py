@@ -1,51 +1,76 @@
 import time, threading, os, datetime
 from pythonosc import dispatcher
 from pythonosc import osc_server
+from pythonosc.udp_client import SimpleUDPClient
+from signal import signal, SIGINT
+from sys import exit
+# Sample head message /bodies/72057594037928017/joints/Head
 
-def start(addr, *stuff):
-    global f, recording
-    if recording == False:
-        timestamp = datetime.datetime.fromtimestamp(time.time()).strftime('%Y-%m-%d_%H-%M-%S')
-        basename = str(stuff[0])
-        filename = basename+"_"+timestamp+".txt"
-        f = open(filename, 'w')
-        print ("Logging ON")
-        print ("Logging to file "+filename)
-        recording = True
+def run(addr, *args):
+    global body, bodyFound, inferredCount
+    newAddr = ""
+    if addr.startswith("/bodies"):
+        if addr.endswith("Head") and body != "":
+            if args[3] == "Inferred":
+                inferredCount += 1
+                print(f"Losing body... {inferredCount}")
+            if args[3] == "NotTracked" or inferredCount > 17:
+                print(f"Body lost {body}, {args[3]}, {inferredCount}")
+                inferredCount = 0
+                body = ""
+            if args[3] == "Tracked" and inferredCount > 0:
+                inferredCount = 0
+                print(f"Body is back... {inferredCount}")
+        elif addr.endswith("Head") and body == "":
+            if args[3] == "Tracked":
+                body = addr.split("/")[2]
+                inferredCount = 0
+                print(f"Body found: {body}")
+        if addr.split("/")[2] == body:
+            if addr.endswith("Head"):
+                newAddr = "/head"
+            elif addr.endswith("hands/Left"):
+                newAddr = "/leftHand/status"
+            elif addr.endswith("hands/Right"):
+                newAddr = "/rightHand/status"
+            elif addr.endswith("HandTipLeft"):
+                newAddr = "/leftHand/position"
+            elif addr.endswith("HandTipRight"):
+                newAddr = "/rightHand/position"
+            else:
+                newAddr = ""
+            if newAddr != "":
+                client.send_message(newAddr, args)
+                if debug:
+                    print(f"Sending {newAddr} {args} to {outAddress}:{outOSCport}")
+        else:
+            discarded = addr.split("/")[2]
+            if debug:
+                print(f"Another body found: {discarded} discarding...")
 
-def stop(addr, *stuff):
-    print(addr+" received")
-    global f, recording
-    if recording == True:
-        recording = False
-        print ("Disabling logging, saving file...")
-        f.close()
-    print ("Logging OFF")
-
-def recordData(addr, *stuff):
-    global f, recording
-    if recording == True and addr != "/start" and addr != "/stop":
-        toString = datetime.datetime.fromtimestamp(time.time()).strftime('%Y-%m-%d %H-%M-%S.%f')
-        toString = toString + "\t" + addr
-        toString = toString + "\t" + "\t".join(map(str, stuff))
-        toString.strip()
-        print("Logged: "+toString)
-        f.write(toString+'\n')
+def stop(signal_received, frame):
+    # Handle any cleanup here
+    print("Exiting...")
+    exit(0)
 
 if __name__ == "__main__":
     # Change these defaults to suit your needs:
-    OSCport = 6655
-    OSCaddress = '127.0.0.1'
+    inOSCport = 12345
+    outOSCport = 56789
+    inAddress = '192.168.1.130'
+    outAddress = '192.168.1.130'
+    body = ""
+    inferredCount = 0
+    debug = False
+    signal(SIGINT, stop)
+
+    client = SimpleUDPClient(outAddress, outOSCport)
 
     dispatcher = dispatcher.Dispatcher()
-    recording = False
-    test = "xyz"
-    dispatcher.map("/start", start)
-    dispatcher.map("/stop", stop)
-    dispatcher.map("*", recordData)
+    dispatcher.map("*", run)
 
     server = osc_server.ThreadingOSCUDPServer(
-        (OSCaddress, OSCport), dispatcher)
-    print("Logging OSC data on {}".format(server.server_address))
-    print ("Logging OFF")
+        (inAddress, inOSCport), dispatcher)
+    print("Receiving skeleton data on {}".format(server.server_address))
     server.serve_forever()
+
